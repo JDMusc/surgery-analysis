@@ -1,0 +1,243 @@
+---
+title: "Paper"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Load Data
+
+```{r, echo=FALSE}
+rm(list = ls())
+library(knitr)
+library(readtv)
+library(tidyverse)
+
+f_name = 'data/events_phi_free.csv'
+```
+
+
+```{r}
+events = read_csv(f_name)
+events %<>% 
+  group_by(Case) %>% 
+  group_modify(~ mutate(.x, RelativeTime = Time - min(Time, na.rm = TRUE)))
+
+glimpse(events)
+```
+
+
+##CPA Markers
+```{r, echo=F}
+cpa_markers = read_rds('events-cpa-markers.RDS')
+glimpse(cpa_markers)
+```
+
+
+```{r}
+getEvent = function(case, cpt, pre = TRUE) {
+  if(pre) {
+    rank_fn = cume_dist
+    `%cmp%` = `<`
+  } else {
+    `%cmp%` = `>=`
+    rank_fn = min_rank
+  }
+  
+  events %>% 
+    filter(Case == case) %>% 
+    filter(RelativeTime %cmp% cpt) %>% 
+    filter(rank_fn(RelativeTime) == 1) %>% 
+    filter(row_number(RelativeTime) == max(row_number(RelativeTime)))
+}
+```
+
+```{r}
+cpa_markers_events = cpa_markers %>% 
+  group_by(Case, cpts) %>% 
+  group_modify(~ data.frame(vals = .x$vals, 
+                pre = getEvent(.x$Case, .x$cpts),
+                post = getEvent(.x$Case, .x$cpts, FALSE)),
+               keep = TRUE)
+```
+
+##Jump Rates
+
+```{r}
+cpa_markers_events = cpa_markers_events %>% 
+  group_by(Case) %>% 
+  group_modify(~ .x %>% mutate(jump_rate = vals - lag(vals, default = 0),
+                               is_cascade = vals >= 3,
+                               jump_type =  if_else(jump_rate > 0, 
+                                                    'increases', 'decreases'),
+                               start = lag(cpts, default = 0),
+                               end = cpts
+                               )
+               )
+```
+
+```{r}
+cpa_markers_events %>% select(Case, cpts, vals, jump_rate, jump_type, is_cascade,
+                              start, end)
+```
+
+
+```{r}
+cpa_markers_events %>% glimpse
+```
+
+## Cascade Marker Events
+
+```{r}
+cascade_start_events = cpa_markers_events %>% 
+  filter(jump_type == "increases" & is_cascade)
+
+nrow(cpa_markers_events)
+```
+
+
+What percent of surgeries?
+```{r}
+n_distinct(cascade_start_events$Case)/
+  n_distinct(cpa_markers_events$Case)
+```
+
+$$
+P(pre|ET)
+$$
+
+
+```{r}
+cascade_start_events %>% 
+  ungroup %>% 
+  count(pre.Event.Type) %>% 
+  arrange(desc(n)) %>% 
+  mutate(ratio = n/sum(events$Event.Type == pre.Event.Type) * 100)
+```
+
+
+$$
+P(post|ET)
+$$
+
+```{r}
+cascade_start_events %>% 
+  ungroup %>% 
+  filter(jump_type == "increases") %>% 
+  count(post.Event.Type) %>% 
+  arrange(desc(n)) %>% 
+  mutate(ratio = n/sum(events$Event.Type == post.Event.Type) * 100)
+```
+
+$$
+P(ET_{post}|ET_{pre})
+$$
+
+```{r}
+cascade_start_events %>% 
+  ungroup %>% 
+  count(pre.Event.Type, post.Event.Type) %>% 
+  arrange(desc(n))
+```
+
+
+$$
+P(trigger|ET)
+$$
+
+```{r}
+getTrigger = function(pre.RelativeTime, pre.Event.Type,
+                      post.RelativeTime, post.Event.Type,
+                      cpts)
+  if_else(abs(pre.RelativeTime - cpts) <= 3,
+          pre.Event.Type, post.Event.Type)
+
+cascade_start_events %>% 
+  mutate(Event.Type = getTrigger(pre.RelativeTime, pre.Event.Type,
+                                 post.RelativeTime, post.Event.Type,
+                                 cpts)) %>% 
+  group_by(Event.Type) %>% 
+  summarise(n = n()) %>% 
+  arrange(desc(n)) %>% 
+  mutate(ratio = n/sum(events$Event.Type == Event.Type) * 100)
+```
+
+Common cascade event types
+
+```{r}
+getMarker = function(case, rel_time) 
+  cpa_markers_events %>% 
+  filter(Case == case & start <= rel_time & end > rel_time) %>% 
+  select(c_start = start, c_end = end, is_cascade, vals) %>% 
+  top_n(1)
+
+```
+
+```{r}
+cascadeEvents = function(case) {
+  cme = cpa_markers_events %>% filter(Case == case)
+  
+  rtSafe = function(case) {
+    t_end = cme %>% 
+      filter(Case == case) %>% 
+      {max(.$end)}
+    rt = events %>% filter(Case == case) %>% pull(RelativeTime)
+    if_else(rt >= t_end, t_end - 1, rt)
+  }
+  
+  rts = rtSafe(case)
+  rts %>% 
+    purrr::map(function(rt){
+      cme$start %>% 
+        purrr::imap(~ rt >= .x & rt <= cme$end[.y] & cme$is_cascade[.y]) %>% 
+        purrr::reduce(~ .x | .y)
+    }) %>% 
+    unlist
+}
+```
+
+```{r}
+getMarker(1, 5)
+```
+
+```{r}
+events_and_cascades = events %>% 
+  group_by(Case) %>% 
+  group_modify(~ .x %>% 
+                 mutate(is_cascade = cascadeEvents(unique(.x$Case))) %>% 
+                 select(-"Case"), 
+               keep = TRUE) %>% 
+  ungroup
+```
+
+
+```{r}
+event_counts = events %>% 
+  ungroup %>% 
+  count(Event.Type) %>% 
+  rename(n = n)
+```
+
+```{r}
+table1 = events_and_cascades %>% 
+  filter(is_cascade) %>% 
+  count(Event.Type) %>%
+  rename(n_cascade = n) %>% 
+  merge(event_counts) %>% 
+  mutate(p_cascade_given_et = n_cascade/n,
+         p_et = n/sum(n),
+         p_et_given_cascade = n_cascade/sum(n_cascade)) %>%    
+  arrange(desc(p_cascade_given_et)) 
+```
+
+```{r}
+table1 %>% kable
+```
+
+```{r}
+events_and_cascades %>% 
+  count(is_cascade) %>%
+  mutate(p = n/sum(n))
+```
