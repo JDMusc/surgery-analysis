@@ -1,15 +1,20 @@
 ---
-title: "Paper"
 output: github_document
 ---
+
+
+This document shows how we calculated which flow disruptions were most commonly found in disruption cascades.
+
+All patient and hospital information has been removed from the data. To further deidentify the patients, each case was set to start at noon (720 minutes into the day), and all disruption notes were removed.
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-##Load Data
+## Load Data
 
-```{r, echo=FALSE}
+```{r, message=FALSE}
 rm(list = ls())
 library(knitr)
 library(readtv)
@@ -20,8 +25,7 @@ f_name = 'data/events_phi_free.csv'
 
 
 ```{r}
-events = read_csv(f_name)
-events %<>% 
+events = read_csv(f_name) %>% 
   group_by(Case) %>% 
   group_modify(~ mutate(.x, RelativeTime = Time - min(Time, na.rm = TRUE)))
 
@@ -29,10 +33,10 @@ glimpse(events)
 ```
 
 
-##CPA Markers
+## Load CPA Markers
+
+See `plot_gen2.R` for how the markers were calculated. The source code to derive the markers was output from read-tv.
 ```{r, echo=F}
-#markers saved and output with `read-tv`
-#they can be viewed with plot_gen2.R
 cpa_markers = read_rds('events-cpa-markers.RDS')
 glimpse(cpa_markers)
 ```
@@ -65,7 +69,8 @@ cpa_markers_events = cpa_markers %>%
                keep = TRUE)
 ```
 
-##Jump Rates
+
+## Jump Rates
 
 ```{r}
 cpa_markers_events = cpa_markers_events %>% 
@@ -81,8 +86,10 @@ cpa_markers_events = cpa_markers_events %>%
 ```
 
 ```{r}
-cpa_markers_events %>% select(Case, cpts, vals, jump_rate, jump_type, is_cascade,
-                              start, end)
+cpa_markers_events %>% 
+  select(Case, cpts, vals, jump_rate, jump_type, is_cascade, start, end) %>% 
+  head %>% 
+  kable
 ```
 
 
@@ -100,18 +107,10 @@ nrow(cpa_markers_events)
 ```
 
 
-What count and percent of surgeries?
+What percent of surgeries?
 ```{r}
-c(n_distinct(cascade_start_events$Case), 
- n_distinct(cascade_start_events$Case)/
-  n_distinct(cpa_markers_events$Case))
-```
-Cascade counts per surgery?
-```{r}
-cascade_start_events %>% 
-  group_by(Case) %>% 
-  summarise(n_cascade = n()) %>% 
-  count(n_cascade)
+n_distinct(cascade_start_events$Case)/
+  n_distinct(cpa_markers_events$Case)
 ```
 
 $$
@@ -124,7 +123,9 @@ cascade_start_events %>%
   ungroup %>% 
   count(pre.Event.Type) %>% 
   arrange(desc(n)) %>% 
-  mutate(ratio = n/sum(events$Event.Type == pre.Event.Type) * 100)
+  mutate(`ratio (%)` = n/sum(events$Event.Type == pre.Event.Type) * 100) %>% 
+  head %>% 
+  kable
 ```
 
 
@@ -138,24 +139,24 @@ cascade_start_events %>%
   filter(jump_type == "increases") %>% 
   count(post.Event.Type) %>% 
   arrange(desc(n)) %>% 
-  mutate(ratio = n/sum(events$Event.Type == post.Event.Type) * 100)
+  mutate(`ratio (%)` = n/sum(events$Event.Type == post.Event.Type) * 100) %>% 
+  head %>% 
+  kable
 ```
 
-$$
-P(ET_{post}|ET_{pre})
-$$
+$P(ET_{post}|ET_{pre})$
 
 ```{r}
 cascade_start_events %>% 
   ungroup %>% 
   count(pre.Event.Type, post.Event.Type) %>% 
-  arrange(desc(n))
+  arrange(desc(n)) %>% 
+  head %>% 
+  kable
 ```
 
 
-$$
-P(trigger|ET)
-$$
+$P(trigger|ET)$
 
 ```{r}
 getTrigger = function(pre.RelativeTime, pre.Event.Type,
@@ -171,10 +172,12 @@ cascade_start_events %>%
   group_by(Event.Type) %>% 
   summarise(n = n()) %>% 
   arrange(desc(n)) %>% 
-  mutate(ratio = n/sum(events$Event.Type == Event.Type) * 100)
+  mutate(`ratio (%)` = n/sum(events$Event.Type == Event.Type) * 100) %>% 
+  head %>% 
+  kable
 ```
 
-Common cascade event types
+Common cascade event types.
 
 ```{r}
 getMarker = function(case, rel_time) 
@@ -223,6 +226,8 @@ events_and_cascades = events %>%
 ```
 
 
+# Which Event Types are Most Likely in Cascades
+
 ```{r}
 event_counts = events %>% 
   ungroup %>% 
@@ -230,17 +235,17 @@ event_counts = events %>%
   rename(n = n)
 ```
 
+
+
 ```{r}
 table1 = events_and_cascades %>% 
   filter(is_cascade) %>% 
   count(Event.Type) %>%
   rename(n_cascade = n) %>% 
   merge(event_counts) %>% 
-  mutate(n_not_cascade = n - n_cascade) %>% 
   mutate(p_cascade_given_et = n_cascade/n,
          p_et = n/sum(n),
-         p_et_given_cascade = n_cascade/sum(n_cascade),
-         p_et_given_not_cascade = n_not_cascade/sum(n_not_cascade)) %>%    
+         p_et_given_cascade = n_cascade/sum(n_cascade)) %>%    
   arrange(desc(p_cascade_given_et)) 
 ```
 
@@ -251,5 +256,6 @@ table1 %>% kable
 ```{r}
 events_and_cascades %>% 
   count(is_cascade) %>%
-  mutate(p = n/sum(n))
+  mutate(p = n/sum(n)) %>% 
+  kable
 ```
